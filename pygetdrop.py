@@ -4,35 +4,28 @@ import subprocess
 import exifread
 import time
 import os, errno, subprocess, filecmp
-import sys
+import sys, getopt
 from datetime import datetime as dt
 import pickle
 
-
-drop_uploader="/home/pi/Dropbox-Uploader/dropbox_uploader.sh"
+# Location of dropbox_uploader script.
+drop_uploader = "/home/pi/Dropbox-Uploader/dropbox_uploader.sh"
+# Max no. of trys to execute commands with dropbox_uploader.
+max_trys = 3
 
 # list of directories to get.
-#check_dir_list = ["Photos","Test","R.Photos"]
+#check_dir_list = ["Photos","R.Photos"]
 check_dir_list = ["R.Photos"]
-directory_for_downloads = "Photos_temp"
+download_dir = "/home/pi/Dropbox-Uploader/Photos_temp"
 wait_list_file = "file_list_4_dropbox"
 
+archives = []
+
 # Setup place to backup to...
-archives = [
-             { 'host' : '192.168.1.43',
-               'user' : 'XXXXXXXXXX',
-               'password' : "XXXXXXXXXX",
-               'target_dir' : ":/storage/Media/Pictures/New_Shotwell_Library/"
-             },
-             { 'host' : '192.168.1.15',
-               'user' : 'XXXXXXXXXX',
-               'password' : "XXXXXXXXXX",
-               'target_dir' : "::Pictures/"
-             },
-]
     
 class DB_File(object):
-    """Thing to whosit...."""
+    """Object of convenience. Gives me somewhere to stuff all the bits that relate
+       to each file on Dropbox and allows easy storage of them in a list."""
 
     def __init__(self, db_name, db_path, db_size,
                  local_name=None, local_path=None):
@@ -41,11 +34,14 @@ class DB_File(object):
 	self.size = db_size
         self.local_name = local_name
         self.local_path = local_path
-	self.backup_a = False
-	self.backup_b = False
+	#self.backup_a = False
+	#self.backup_b = False
 	self.backup_dict = {}
 	for archive in archives:
 	    self.backup_dict[archive['host']] = False
+	# Okay, thinking about this - init only gets run when creating a new file
+	# object - I need to clean out this garbage from the files loaded in from
+	# previous runs. Had better work out where ot move this block to.
 	# Just check there are no unwanted hosts left in backup dict
 	for host in self.backup_dict.keys():
             found = False
@@ -56,6 +52,9 @@ class DB_File(object):
 	        print("Removing redundent host {0:s} for file object".format(
 		    host))
 	        del self.backup_dict[host]
+
+    def get_size(self):
+        return self.size
 
     def backup_ok(self, host):
         print ("registering backup, to system {0:s}, of {1:s}/{2:s}".format(
@@ -146,7 +145,8 @@ def mkdir_p(path):
     except OSError as exc: # Python >2.5
         if exc.errno == errno.EEXIST and os.path.isdir(path):
             pass
-        else: raise
+        else:
+	    raise
 
 def save_obj(obj, name ):
     with open(name + '.pkl', 'wb') as f:
@@ -199,6 +199,17 @@ def main():
     # Actually it has be keyed on dir + dropbox_filename for size check...
 
     try:
+        setup_file = os.path.expanduser("~/.pygetdrop.rc")
+        print "Getting setup file :" + setup_file + ".pkl"
+    #    wait_list_file = open(list_of_files_waiting)
+        archives = load_obj(setup_file)
+    except IOError:
+        # If not exists, PANIC
+        print "Couldn't find file :" + setup_file + ".pkl"
+        sys.exit(7)
+
+    try:
+        print "Getting wait list file :" + wait_list_file + ".pkl"
     #    wait_list_file = open(list_of_files_waiting)
         wait_list = load_obj(wait_list_file)
     except IOError:
@@ -232,7 +243,7 @@ def main():
 		    #positions = seek(file_key, got_it_list)
 		    pos_in_list = got_it_list.index(file_key)
 		    print "It's the {0:d}'th element in the list".format(pos_in_list)
-                    if wait_list[pos_in_list].size == int(db_size):
+                    if wait_list[pos_in_list].get_size == int(db_size):
                         print "Skipping download of " + db_file
                     else:
                         print "Got myself a file size mismatch....."
@@ -244,43 +255,44 @@ def main():
     # Check to see if files exist @ same size - if not download
     for directory, db_filename, size in files_to_get:
         newname = db_filename.replace(" ","_")
-	new_fullpath = "{0:s}/{1:s}".format(directory_for_downloads, newname)
+	new_fullpath = "{0:s}/{1:s}".format(download_dir, newname)
         print ("getting file : " + directory + "/" + db_filename + " => " +
 	       new_fullpath)
         dropbox_cmd = [drop_uploader,"download", directory +"/"+ db_filename,
 	               new_fullpath, "-s"]
-	no_tries = 0
-        while no_tries < 3:
+        # Allow max_trys trys as Dropbox command sometimes times out on slow
+	# internet days....
+	no_trys = 0
+        while no_trys < max_trys:
 	    try:
                 results =  subprocess.check_output(dropbox_cmd)
 	        thing = DB_File(db_filename, directory, size,
-	                        local_path=directory_for_downloads,
+	                        local_path=download_dir,
 	       	                local_name=newname)
                 print results
 	        wait_list.append(thing)
 	        break
 	    except:
 	        print "Big fat BUM. Something's gone up spout like...."
-		no_tries += 1
+		no_trys += 1
+		#raise
 
-        if no_tries == 3:
-	    print("Ginving up on {0:s}/{1:s}".format(directory, db_filename))
+        if no_trys == max_trys:
+	    print("Giving up on {0:s}/{1:s}".format(directory, db_filename))
 	    continue
-        newpath = directory_for_downloads +"/"+ exif_date_to_path(new_fullpath)
+        newpath = download_dir +"/"+ exif_date_to_path(new_fullpath)
         mkdir_p(newpath)
         newnewpath, newnewname = move_file(new_fullpath, newpath)
         print("moved {0:s} to {1:s}/{2:s}".format(newname,
 	                                          newnewpath, newnewname))
         thing.change_local_locn(newnewpath, newnewname)
 
-    source_dir = "Photos_temp/"
+    source_dir = download_dir +'/'
     arguments=["--verbose", "--recursive", "--human-readable",
+               "--no-owner", "--no-group", "--no-perms", "--no-acls",
                "--times"]
 
     for archive in archives:
-        #user = 'spudhead'
-        #host = '192.168.1.43'
-        #target_dir = ":/storage/Dropbox_auto_transfer"
         destination = (archive['user'] +'@' + archive['host'] +
 	               archive['target_dir'])
         env_d = dict(os.environ)
@@ -299,27 +311,6 @@ def main():
 	        thing.backup_ok(archive['host'])
         else:
             print "error during rsync"
-
-#@>-    all_backups = True
-#@>-    for archive in archives:
-#@>-        if all(thing.check_backup(archive['host']) for thing in wait_list):
-#@>-            print("It claims to have backed up to {0:s}".format
-#@>-	                               (archive['host']))
-#@>-	else:
-#@>-            print("It claims problems backing up up to {0:s}".format
-#@>-	                               (archive['host']))
-#@>-	    all_backups = False
-
-#=-     for item in [2,3,4,-3,-2]:
-#=-         try:
-#=-             wait_list[item].backup_a = False
-#=- 	except:
-#=- 	    pass
-
-#)-     if all(thing.backup_a for thing in wait_list):
-#)-         print "It still claims to have backed up to A"
-#)-     else:
-#)-         print "Not any more it doesn't..."
 
 
     got_it_list = []
@@ -360,5 +351,62 @@ def main():
 
     save_obj(wait_list, wait_list_file)
 
+def start_setup():
+    print "Nice try..."
+    setup_file = os.path.expanduser("~/.pygetdrop.rc")
+    try:
+    #    wait_list_file = open(list_of_files_waiting)
+        wait_list = load_obj(setup_file)
+    except IOError:
+        # If not exists, create the file
+        print "Couldn't find file :" + setup_file
+        setup = []
+    
+    another = True
+    added = 0
+    while another:
+        host = raw_input("What host would you like to back up to ?")
+        user = raw_input("Please provide the username ?")
+        password = raw_input("And the password ?")
+	if password == '':
+	    password = None
+        target_dir = raw_input("Finally, what's the intended directory ?")
+	print("Is this what you intended ?")
+	print("Host     : {0:s}").format(host)
+	print("User     : {0:s}").format(user)
+	print("Password : {0:s}").format(password)
+	print("Target dir : {0:s}").format(target_dir)
+	confirm = raw_input("Please confirm Y/N")
+	if confirm[0].lower() == 'y':
+            setup.append( { 'host' : host,
+                            'user' : user,
+                            'password' : password,
+                            'target_dir' : target_dir
+                          } )
+            added += 1
+	else:
+	    print("Abandoned adding that entry...")
+	confirm = raw_input("Would you like to add another ?")
+	if confirm[0].lower() == 'y':
+	    another = True
+	else:
+	    another = False
+    if added > 0:
+	print("Saving new host configs.")
+        save_obj(setup, setup_file)
+    sys.exit()
+
 if __name__ == "__main__":
+    try:
+        opts, args = getopt.getopt(sys.argv[1:],"hs",["setup"])
+    except getopt.GetoptError:
+        print "{0:s} [-s|--setup]".format(sys.argv[0])
+	sys.exit(2)
+    for opt, arg in opts:
+        print "option is ",opt
+        if opt == '--h':
+            print "{0:s} [-s|--setup]".format(sys.argv[0])
+	    sys.exit()
+	elif opt in ("-s","--setup"):
+	    start_setup()
     main()
