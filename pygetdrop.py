@@ -5,7 +5,6 @@ import exifread
 import time
 import os, errno, subprocess, filecmp
 import sys, getopt
-from datetime import datetime as dt
 import pickle
 
 # Location of dropbox_uploader script.
@@ -206,6 +205,7 @@ def main():
     except IOError:
         # If not exists, PANIC
         print "Couldn't find file :" + setup_file + ".pkl"
+        print "Try running {0:s} -s to create a setup file."
         sys.exit(7)
 
     try:
